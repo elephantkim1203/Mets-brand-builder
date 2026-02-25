@@ -182,6 +182,8 @@ export default function App() {
         setLoadingMsgIndex((prev) => (prev + 1) % LOADING_MESSAGES.length);
       }, 1000);
 
+      const startTime = Date.now();
+
       try {
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
         const model = "gemini-3-flash-preview";
@@ -291,6 +293,13 @@ export default function App() {
           ko: "전략 생성에 실패했습니다. 다시 시도해주세요."
         });
       } finally {
+        const elapsedTime = Date.now() - startTime;
+        const remainingTime = Math.max(0, 3000 - elapsedTime);
+        
+        if (remainingTime > 0) {
+          await new Promise(resolve => setTimeout(resolve, remainingTime));
+        }
+
         clearInterval(interval);
         setView("result");
       }
