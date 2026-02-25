@@ -5,8 +5,9 @@
 
 import { useState, useEffect, ChangeEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
-  ChevronDown, Sparkles, Layout, Palette, Type, Image as ImageIcon, Box, 
+  ChevronDown, Sparkles, Layout, Palette, Type as TypeIcon, Image as ImageIcon, Box, 
   Zap, Heart, Shield, Target, Search, Bell, Settings, User 
 } from "lucide-react";
 
@@ -17,10 +18,7 @@ interface FormData {
   brandName: string;
   industry: string;
   touchpoint: string;
-  toneConservativeInnovative: number;
-  toneMinimalMaximal: number;
-  toneCasualPremium: number;
-  toneCoolWarm: number;
+  selectedTones: string[];
   negativePreference: string;
 }
 
@@ -78,15 +76,24 @@ export default function App() {
   const [lang, setLang] = useState<Language>("en");
   const [step, setStep] = useState(1);
   const [toast, setToast] = useState<string | null>(null);
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [loadingMsgIndex, setLoadingMsgIndex] = useState(0);
+  const [brandStrategy, setBrandStrategy] = useState<{ en: string; ko: string } | null>(null);
+  const [aiGeneratedAssets, setAiGeneratedAssets] = useState<{
+    primaryColor: string;
+    secondaryColor: string;
+    accentColor: string;
+    primaryFont: string;
+    secondaryFont: string;
+    slogan: { en: string; ko: string };
+    mission: { en: string; ko: string };
+    coreValue: { en: string; ko: string };
+  } | null>(null);
   const [formData, setFormData] = useState<FormData>({
     brandName: "",
     industry: "",
     touchpoint: "",
-    toneConservativeInnovative: 50,
-    toneMinimalMaximal: 50,
-    toneCasualPremium: 50,
-    toneCoolWarm: 50,
+    selectedTones: [],
     negativePreference: "",
   });
 
@@ -102,8 +109,30 @@ export default function App() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  const handleSliderChange = (name: keyof FormData, value: number) => {
-    setFormData((prev) => ({ ...prev, [name]: value }));
+  const TONE_TO_CATEGORY: Record<string, string> = {
+    Conservative: "Vibe", Innovative: "Vibe", Minimal: "Vibe", Maximal: "Vibe", Bold: "Vibe", Classic: "Vibe",
+    Casual: "Voice", Premium: "Voice", Cool: "Voice", Warm: "Voice", Friendly: "Voice", Authoritative: "Voice",
+    "Tech-driven": "Concept", "Human-centric": "Concept", "Eco-friendly": "Concept", Artistic: "Concept", Futuristic: "Concept"
+  };
+
+  const handleToneToggle = (tone: string) => {
+    const category = TONE_TO_CATEGORY[tone];
+    setFormData((prev) => {
+      const isSelected = prev.selectedTones.includes(tone);
+      if (!isSelected) {
+        const categoryTones = prev.selectedTones.filter(t => TONE_TO_CATEGORY[t] === category);
+        if (categoryTones.length >= 2) {
+          setToast(lang === "en" ? `You can select up to 2 items in ${category}.` : `해당 카테고리는 2개까지만 선택 가능합니다.`);
+          return prev;
+        }
+      }
+      return {
+        ...prev,
+        selectedTones: isSelected
+          ? prev.selectedTones.filter((t) => t !== tone)
+          : [...prev.selectedTones, tone],
+      };
+    });
   };
 
   const resetForm = () => {
@@ -111,12 +140,11 @@ export default function App() {
       brandName: "",
       industry: "",
       touchpoint: "",
-      toneConservativeInnovative: 50,
-      toneMinimalMaximal: 50,
-      toneCasualPremium: 50,
-      toneCoolWarm: 50,
+      selectedTones: [],
       negativePreference: "",
     });
+    setBrandStrategy(null);
+    setAiGeneratedAssets(null);
     setStep(1);
   };
 
@@ -124,11 +152,9 @@ export default function App() {
     if (step === 1) {
       if (!formData.brandName || !formData.industry || !formData.touchpoint) return false;
     } else if (step === 2) {
-      // Sliders always have values, but we can check if they are initialized if needed.
-      // For now, step 2 is always valid as per requirements.
+      if (formData.selectedTones.length === 0) return false;
       return true;
     }
-    // Step 3 is optional
     return true;
   };
 
@@ -147,7 +173,7 @@ export default function App() {
     lang === "en" ? "Finalizing your brand identity system..." : "브랜드 아이덴티티 시스템 최종 점검 중..."
   ];
 
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (validateStep()) {
       setView("loading");
       setLoadingMsgIndex(0);
@@ -156,10 +182,118 @@ export default function App() {
         setLoadingMsgIndex((prev) => (prev + 1) % LOADING_MESSAGES.length);
       }, 1000);
 
-      setTimeout(() => {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const model = "gemini-3-flash-preview";
+        
+        const prompt = `
+          ### ABSOLUTE DESIGN CONSTRAINTS (PRIORITY 1 - MUST FOLLOW):
+          "${formData.negativePreference || "None"}"
+          
+          You are a world-class brand strategist and senior designer. 
+          Create a concise brand strategy (2-3 sentences), a catchy slogan, a brand mission, and a core value for a brand named "${formData.brandName}" in the "${formData.industry}" industry.
+          The primary touchpoint is "${formData.touchpoint}".
+          
+          The brand personality is built around these keywords: ${formData.selectedTones.join(", ")}.
+          
+          ### BILINGUAL REQUIREMENT:
+          You MUST provide all text data (strategy, slogan, mission, coreValue) in BOTH English (en) and Korean (ko).
+          
+          ### DESIGN TASK:
+          1. Strategy: Explain how the selected tones drive the brand's positioning.
+          2. Slogan: A short, memorable phrase.
+          3. Mission: A statement of the brand's purpose.
+          4. Core Value: A single key principle.
+          5. Colors: Suggest a Primary, Secondary, and Accent brand color in HEX format.
+          6. Fonts: Choose a Primary Font (for headings) and a Secondary Font (for body text) from the following list:
+             - Serif: "Cormorant Garamond", "Lora", "Playfair Display", "Fraunces"
+             - Sans-serif: "Inter", "Montserrat", "Roboto", "Archivo", "Outfit"
+             - Display/Experimental: "Syncopate", "Syne", "Space Grotesk"
+          
+          ### CRITICAL RULE ON NEGATIVE PREFERENCES:
+          The "Negative Preference" provided above is an ABSOLUTE design constraint. 
+          - If the user says "Primary color fixed to black", you MUST return "#000000" as the primaryColor, regardless of industry standards.
+          - If the user says "Avoid blue", you MUST NOT use any blue hues.
+          - If the user says "Use only serif fonts", you MUST choose from the Serif list.
+          
+          Return the response in JSON format.
+        `;
+
+        const response = await ai.models.generateContent({
+          model,
+          contents: [{ parts: [{ text: prompt }] }],
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                strategy: {
+                  type: Type.OBJECT,
+                  properties: {
+                    en: { type: Type.STRING },
+                    ko: { type: Type.STRING }
+                  },
+                  required: ["en", "ko"]
+                },
+                slogan: {
+                  type: Type.OBJECT,
+                  properties: {
+                    en: { type: Type.STRING },
+                    ko: { type: Type.STRING }
+                  },
+                  required: ["en", "ko"]
+                },
+                mission: {
+                  type: Type.OBJECT,
+                  properties: {
+                    en: { type: Type.STRING },
+                    ko: { type: Type.STRING }
+                  },
+                  required: ["en", "ko"]
+                },
+                coreValue: {
+                  type: Type.OBJECT,
+                  properties: {
+                    en: { type: Type.STRING },
+                    ko: { type: Type.STRING }
+                  },
+                  required: ["en", "ko"]
+                },
+                primaryColor: { type: Type.STRING, description: "HEX color code (e.g., #000000)" },
+                secondaryColor: { type: Type.STRING, description: "HEX color code" },
+                accentColor: { type: Type.STRING, description: "HEX color code" },
+                primaryFont: { type: Type.STRING, description: "Font name from the provided list" },
+                secondaryFont: { type: Type.STRING, description: "Font name from the provided list" },
+              },
+              required: ["strategy", "slogan", "mission", "coreValue", "primaryColor", "secondaryColor", "accentColor", "primaryFont", "secondaryFont"]
+            }
+          }
+        });
+
+        const result = JSON.parse(response.text || "{}");
+        setBrandStrategy(result.strategy);
+        if (result.primaryColor && result.secondaryColor) {
+          setAiGeneratedAssets({
+            primaryColor: result.primaryColor,
+            secondaryColor: result.secondaryColor,
+            accentColor: result.accentColor || "#FFFFFF",
+            primaryFont: result.primaryFont || "Inter",
+            secondaryFont: result.secondaryFont || "Inter",
+            slogan: result.slogan,
+            mission: result.mission,
+            coreValue: result.coreValue
+          });
+        }
+      } catch (error) {
+        console.error("Gemini Error:", error);
+        setBrandStrategy({
+          en: "Failed to generate strategy. Please try again.",
+          ko: "전략 생성에 실패했습니다. 다시 시도해주세요."
+        });
+      } finally {
         clearInterval(interval);
         setView("result");
-      }, 4000);
+      }
     } else {
       setToast("Please fill out all fields to proceed.");
     }
@@ -193,9 +327,9 @@ export default function App() {
       return hues[industry] || 200;
     };
 
-    const h = getBaseHue(formData.industry) + (formData.toneCoolWarm - 50) * 0.5;
-    const s = 40 + (formData.toneMinimalMaximal > 50 ? 40 : -20);
-    const l = 30 + (formData.toneCasualPremium > 50 ? -10 : 20);
+    const h = getBaseHue(formData.industry);
+    const s = 60;
+    const l = 50;
 
     const hslToHex = (h: number, s: number, l: number) => {
       l /= 100;
@@ -208,9 +342,9 @@ export default function App() {
       return `#${f(0)}${f(8)}${f(4)}`;
     };
 
-    const primaryHex = hslToHex(h, s, l);
-    const secondaryHex = hslToHex((h + 30) % 360, s * 0.8, l + 10);
-    const accentHex = formData.toneCoolWarm > 50 ? "#FACC15" : "#22D3EE";
+    const primaryHex = aiGeneratedAssets?.primaryColor || hslToHex(h, s, l);
+    const secondaryHex = aiGeneratedAssets?.secondaryColor || hslToHex((h + 30) % 360, s * 0.8, l + 10);
+    const accentHex = aiGeneratedAssets?.accentColor || "#ffffff";
 
     const colorData = [
       { hex: primaryHex, rgb: hexToRgb(primaryHex), role: "Primary" },
@@ -218,42 +352,24 @@ export default function App() {
       { hex: accentHex, rgb: hexToRgb(accentHex), role: "Accent" },
     ];
 
-    // Professional Typography Mapping (10+ Fonts)
-    let headingFont = "Inter";
-    let bodyFont = "Inter";
+    // Professional Typography Mapping
+    const fonts = { 
+      heading: aiGeneratedAssets?.primaryFont || "Inter", 
+      body: aiGeneratedAssets?.secondaryFont || "Inter" 
+    };
 
-    if (formData.toneCasualPremium > 70) {
-      if (formData.toneConservativeInnovative < 40) {
-        headingFont = "Cormorant Garamond";
-        bodyFont = "Lora";
-      } else {
-        headingFont = "Fraunces";
-        bodyFont = "Inter";
-      }
-    } else if (formData.toneConservativeInnovative > 70) {
-      if (formData.toneMinimalMaximal < 40) {
-        headingFont = "Space Grotesk";
-        bodyFont = "Inter";
-      } else {
-        headingFont = "Syne";
-        bodyFont = "Archivo";
-      }
-    } else if (formData.toneMinimalMaximal < 30) {
-      headingFont = "Outfit";
-      bodyFont = "Inter";
-    } else {
-      headingFont = "Montserrat";
-      bodyFont = "Roboto";
-    }
-
-    const fonts = { heading: headingFont, body: bodyFont };
-
-    const slogan = formData.toneConservativeInnovative > 50
-      ? "Defining the Future of Excellence."
-      : "Timeless Quality, Modern Vision.";
+    const slogan = aiGeneratedAssets?.slogan || {
+      en: formData.selectedTones.includes("Innovative") ? "Defining the Future of Excellence." : "Timeless Quality, Modern Vision.",
+      ko: formData.selectedTones.includes("Innovative") ? "탁월함의 미래를 정의합니다." : "시대를 초월한 품질, 현대적 비전."
+    };
 
     // Advanced Tone of Voice keywords
-    const keywordData = [];
+    const keywordData = formData.selectedTones.map(tone => ({
+      title: tone,
+      desc: lang === "en" 
+        ? `Reflecting a ${tone.toLowerCase()} brand personality.` 
+        : `${tone} 브랜드 성격을 반영합니다.`
+    }));
     
     // Industry specific
     const industryKeywords: Record<string, any> = {
@@ -264,51 +380,22 @@ export default function App() {
       "Creative & Design": { en: "Dynamic", ko: "역동적인 (Dynamic)", descEn: "Energetic communication that sparks inspiration.", descKo: "영감을 자극하는 활기찬 소통." }
     };
 
-    if (industryKeywords[formData.industry]) {
+    if (industryKeywords[formData.industry] && keywordData.length < 4) {
       const k = industryKeywords[formData.industry];
       keywordData.push({ title: lang === "en" ? k.en : k.ko, desc: lang === "en" ? k.descEn : k.descKo });
     }
 
-    if (formData.toneConservativeInnovative > 60) {
-      keywordData.push({ 
-        title: lang === "en" ? "Innovative" : "혁신적인 (Innovative)", 
-        desc: lang === "en" ? "Pushing boundaries with cutting-edge solutions." : "첨단 솔루션으로 한계를 뛰어넘는 진보적 태도." 
-      });
-    } else {
-      keywordData.push({ 
-        title: lang === "en" ? "Reliable" : "신뢰할 수 있는 (Reliable)", 
-        desc: lang === "en" ? "Consistent performance building long-term trust." : "일관된 퍼포먼스로 구축하는 장기적 신뢰." 
-      });
-    }
-
-    if (formData.toneMinimalMaximal < 40) {
-      keywordData.push({ 
-        title: lang === "en" ? "Essential" : "본질적인 (Essential)", 
-        desc: lang === "en" ? "Stripped back to core elements for maximum impact." : "핵심 요소에 집중하여 메시지의 명확성을 극대화." 
-      });
-    } else {
-      keywordData.push({ 
-        title: lang === "en" ? "Expressive" : "표현력이 풍부한 (Expressive)", 
-        desc: lang === "en" ? "Rich in detail to create a lasting impression." : "풍부한 디테일로 깊은 인상을 남기는 브랜드 경험." 
-      });
-    }
-
-    if (keywordData.length < 4) {
-      keywordData.push({
-        title: lang === "en" ? "Authentic" : "진정성 있는 (Authentic)",
-        desc: lang === "en" ? "Honest communication building real connection." : "진실된 소통으로 형성하는 실질적인 유대감."
-      });
-    }
-
-    const mission = lang === "en" 
-      ? `To empower ${formData.industry} through ${formData.toneConservativeInnovative > 50 ? 'innovation' : 'excellence'}.`
-      : `${formData.industry} 산업을 ${formData.toneConservativeInnovative > 50 ? '혁신' : '탁월함'}으로 이끄는 브랜드.`;
+    const mission = aiGeneratedAssets?.mission || {
+      en: `To empower ${formData.industry} through ${formData.selectedTones.join(" and ")}.`,
+      ko: `${formData.industry} 산업을 ${formData.selectedTones.join("와 ")}으로 이끄는 브랜드.`
+    };
     
-    const coreValue = formData.toneCasualPremium > 50 
-      ? (lang === "en" ? "Uncompromising Quality" : "타협하지 않는 품질")
-      : (lang === "en" ? "Community First" : "커뮤니티 중심 가치");
+    const coreValue = aiGeneratedAssets?.coreValue || {
+      en: formData.selectedTones.includes("Premium") ? "Uncompromising Quality" : "Community First",
+      ko: formData.selectedTones.includes("Premium") ? "타협하지 않는 품질" : "커뮤니티 중심 가치"
+    };
 
-    const iconStyle = (formData.toneConservativeInnovative > 60 || formData.toneMinimalMaximal < 40) ? "Line" : "Solid";
+    const iconStyle = formData.selectedTones.includes("Minimal") ? "Line" : "Solid";
 
     return { colors: colorData, fonts, slogan, keywords: keywordData.slice(0, 4), mission, coreValue, iconStyle };
   };
@@ -352,7 +439,7 @@ export default function App() {
           <button
             onClick={() => setLang("en")}
             className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
-              lang === "en" ? "bg-cyan-400/50 text-white shadow-[0_0_15px_rgba(34,211,238,0.3)]" : "text-white/40 hover:text-white"
+              lang === "en" ? "bg-white/90 text-black shadow-[0_0_15px_rgba(255,255,255,0.3)]" : "text-white/40 hover:text-white"
             }`}
           >
             EN
@@ -360,7 +447,7 @@ export default function App() {
           <button
             onClick={() => setLang("ko")}
             className={`px-3 py-1 text-[10px] font-bold rounded-full transition-all ${
-              lang === "ko" ? "bg-cyan-400/50 text-white shadow-[0_0_15px_rgba(34,211,238,0.3)]" : "text-white/40 hover:text-white"
+              lang === "ko" ? "bg-white/90 text-black shadow-[0_0_15px_rgba(255,255,255,0.3)]" : "text-white/40 hover:text-white"
             }`}
           >
             한
@@ -407,7 +494,7 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.8, duration: 1 }}
-                className="mt-10 px-8 py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-cyan-400/50 hover:text-white hover:scale-105 hover:shadow-[0_0_20px_rgba(34,211,238,0.4)] pointer-events-auto cursor-pointer"
+                className="mt-10 px-8 py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-white/20 hover:scale-105 hover:shadow-[0_0_20px_rgba(255,255,255,0.4)] pointer-events-auto cursor-pointer"
               >
                 Branding Start
               </motion.button>
@@ -431,12 +518,12 @@ export default function App() {
             <div className="flex flex-col items-center max-w-md w-full">
               <div className="w-full space-y-8">
                 {/* Progress Bar with Glow */}
-                <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden shadow-[0_0_20px_rgba(34,211,238,0.1)]">
+                <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden shadow-[0_0_20px_rgba(255,255,255,0.1)]">
                   <motion.div 
                     initial={{ width: "0%" }}
                     animate={{ width: "100%" }}
                     transition={{ duration: 4, ease: "easeInOut" }}
-                    className="h-full bg-cyan-400/50 shadow-[0_0_25px_rgba(34,211,238,0.6)]"
+                    className="h-full bg-white/90 shadow-[0_0_25px_rgba(255,255,255,0.6)]"
                   />
                 </div>
 
@@ -468,7 +555,7 @@ export default function App() {
               <div className="flex justify-start mb-4">
                 <button
                   onClick={() => setView("form")}
-                  className="group flex items-center gap-2 px-6 py-2.5 bg-cyan-400/20 border border-white/30 backdrop-blur-md rounded-full text-white text-[10px] font-bold font-mono tracking-widest uppercase transition-all hover:bg-cyan-400/40 hover:scale-105 hover:shadow-[0_0_20px_rgba(34,211,238,0.3)] shadow-lg"
+                  className="group flex items-center gap-2 px-6 py-2.5 bg-white/10 border border-white/30 backdrop-blur-md rounded-full text-white text-[10px] font-bold font-mono tracking-widest uppercase transition-all hover:bg-white/20 hover:scale-105 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)] shadow-lg"
                 >
                   <ChevronDown className="w-3 h-3 rotate-90" />
                   {TRANSLATIONS[lang].editInput}
@@ -480,36 +567,36 @@ export default function App() {
                 <span className="absolute top-8 left-10 text-white/20 font-mono text-sm">00.</span>
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
                   <div className="lg:col-span-4 space-y-4">
-                    <h2 className="text-white text-2xl font-bold tracking-tight drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>{TRANSLATIONS[lang].brandIdentity}</h2>
+                    <h2 className="text-white text-2xl font-bold tracking-tight drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>{TRANSLATIONS[lang].brandIdentity}</h2>
                     <p className="text-white/40 text-sm leading-relaxed">
-                      {TRANSLATIONS[lang].brandIdentityDesc(formData.brandName, formData.industry)}
+                      {brandStrategy ? brandStrategy[lang] : TRANSLATIONS[lang].brandIdentityDesc(formData.brandName, formData.industry)}
                     </p>
                   </div>
                   <div className="lg:col-span-8 space-y-10">
                     <div className="space-y-4">
-                      <p className="text-cyan-400 font-mono text-[10px] uppercase tracking-[0.4em] drop-shadow-sm">{TRANSLATIONS[lang].visualSignature}</p>
+                      <p className="text-white/90 font-mono text-[10px] uppercase tracking-[0.4em] drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">{TRANSLATIONS[lang].visualSignature}</p>
                       <motion.h1 
                         initial={{ opacity: 0, scale: 0.95 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        className="text-white font-extrabold tracking-tighter leading-none drop-shadow-md break-words"
+                        className="font-extrabold tracking-tighter leading-none drop-shadow-md break-words text-white"
                         style={{ 
-                          fontFamily: `'${assets.fonts.heading}', sans-serif`,
+                          fontFamily: assets.fonts.heading,
                           fontSize: formData.brandName.length > 12 ? "clamp(2.5rem, 8vw, 4rem)" : "clamp(3rem, 15vw, 7rem)"
                         }}
                       >
                         {formData.brandName}
                       </motion.h1>
-                      <p className="text-white/60 text-xl md:text-2xl font-light italic drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.body}', sans-serif` }}>"{assets.slogan}"</p>
+                      <p className="text-white/60 text-xl md:text-2xl font-light italic drop-shadow-sm" style={{ fontFamily: assets.fonts.body }}>"{assets.slogan[lang]}"</p>
                     </div>
                     
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-10">
-                      <div className="relative p-6 bg-white/[0.03] border-l-2 border-cyan-400/50 rounded-r-2xl space-y-3 transition-colors hover:bg-white/[0.05]">
+                      <div className="relative p-6 bg-white/[0.03] border-l-2 border-white/40 rounded-r-2xl space-y-3 transition-colors hover:bg-white/[0.05]">
                         <h4 className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em]">{TRANSLATIONS[lang].brandMission}</h4>
-                        <p className="text-white text-lg font-semibold leading-snug" style={{ fontFamily: `'${assets.fonts.body}', sans-serif` }}>{assets.mission}</p>
+                        <p className="text-white text-lg font-semibold leading-snug" style={{ fontFamily: assets.fonts.heading }}>{assets.mission[lang]}</p>
                       </div>
-                      <div className="relative p-6 bg-white/[0.03] border-l-2 border-cyan-400/50 rounded-r-2xl space-y-3 transition-colors hover:bg-white/[0.05]">
+                      <div className="relative p-6 bg-white/[0.03] border-l-2 border-white/40 rounded-r-2xl space-y-3 transition-colors hover:bg-white/[0.05]">
                         <h4 className="text-white/40 text-[10px] font-bold uppercase tracking-[0.2em]">{TRANSLATIONS[lang].coreValue}</h4>
-                        <p className="text-white text-lg font-semibold leading-snug" style={{ fontFamily: `'${assets.fonts.body}', sans-serif` }}>{assets.coreValue}</p>
+                        <p className="text-white text-lg font-semibold leading-snug" style={{ fontFamily: assets.fonts.heading }}>{assets.coreValue[lang]}</p>
                       </div>
                     </div>
                   </div>
@@ -521,7 +608,7 @@ export default function App() {
                 <span className="absolute top-8 left-10 text-white/20 font-mono text-sm">01.</span>
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
                   <div className="lg:col-span-4 space-y-4">
-                    <h2 className="text-white text-2xl font-bold tracking-tight drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>{TRANSLATIONS[lang].typography}</h2>
+                    <h2 className="text-white text-2xl font-bold tracking-tight drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>{TRANSLATIONS[lang].typography}</h2>
                     <p className="text-white/40 text-sm leading-relaxed">
                       {TRANSLATIONS[lang].typographyDesc}
                     </p>
@@ -529,13 +616,13 @@ export default function App() {
                   <div className="lg:col-span-8 space-y-12">
                     {/* H1 */}
                     <div className="flex flex-col md:flex-row md:items-end gap-6 border-b border-white/5 pb-8">
-                      <div className="text-6xl md:text-8xl text-white font-bold drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>Aa</div>
+                      <div className="text-6xl md:text-8xl text-white font-bold drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>Aa</div>
                       <div className="flex-1 space-y-1">
-                        <p className="text-white text-4xl font-bold drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>{TRANSLATIONS[lang].heading1}</p>
+                        <p className="text-white text-4xl font-bold drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>{TRANSLATIONS[lang].heading1}</p>
                         <div className="flex flex-wrap gap-6 text-[10px] font-mono text-white/40 uppercase tracking-widest mt-6">
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Font Family</span>
-                            <span className="text-cyan-400">{assets.fonts.heading}</span>
+                            <span className="text-white/90 drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">{assets.fonts.heading}</span>
                           </div>
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Style</span>
@@ -550,13 +637,13 @@ export default function App() {
                     </div>
                     {/* H2 */}
                     <div className="flex flex-col md:flex-row md:items-end gap-6 border-b border-white/5 pb-8">
-                      <div className="text-4xl md:text-6xl text-white font-semibold drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>Aa</div>
+                      <div className="text-4xl md:text-6xl text-white font-semibold drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>Aa</div>
                       <div className="flex-1 space-y-1">
-                        <p className="text-white text-2xl font-semibold drop-shadow-sm" style={{ fontFamily: `'${assets.fonts.heading}', sans-serif` }}>{TRANSLATIONS[lang].heading2}</p>
+                        <p className="text-white text-2xl font-semibold drop-shadow-sm" style={{ fontFamily: assets.fonts.heading }}>{TRANSLATIONS[lang].heading2}</p>
                         <div className="flex flex-wrap gap-6 text-[10px] font-mono text-white/40 uppercase tracking-widest mt-6">
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Font Family</span>
-                            <span className="text-cyan-400">{assets.fonts.heading}</span>
+                            <span className="text-white/90 drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">{assets.fonts.heading}</span>
                           </div>
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Style</span>
@@ -579,7 +666,7 @@ export default function App() {
                         <div className="flex flex-wrap gap-6 text-[10px] font-mono text-white/40 uppercase tracking-widest mt-6">
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Font Family</span>
-                            <span className="text-cyan-400">{assets.fonts.body}</span>
+                            <span className="text-white/90 drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">{assets.fonts.body}</span>
                           </div>
                           <div className="space-y-1">
                             <span className="block text-white/60 font-bold">Style</span>
@@ -640,7 +727,7 @@ export default function App() {
                     {[1, 2, 3, 4, 5, 6, 7, 8].map((num) => (
                       <div key={num} className="aspect-square rounded-2xl overflow-hidden bg-white/5 border border-white/5">
                         <img 
-                          src={`https://picsum.photos/seed/${formData.brandName}-${formData.industry}-${formData.toneConservativeInnovative > 50 ? 'innovative' : 'classic'}-${num}/800/800`} 
+                          src={`https://picsum.photos/seed/${formData.brandName}-${formData.industry}-${formData.selectedTones[0] || 'brand'}-${num}/800/800`} 
                           className="w-full h-full object-cover opacity-100" 
                           referrerPolicy="no-referrer" 
                           alt={`Moodboard ${num}`}
@@ -676,9 +763,9 @@ export default function App() {
                           { Icon: User, label: lang === "en" ? "Account" : "계정", role: "User" }
                         ].map(({ Icon, label, role }, i) => (
                           <div key={i} className="flex flex-col items-center gap-2">
-                            <div className="w-full aspect-square bg-white/[0.03] border border-white/10 rounded-xl flex items-center justify-center group hover:bg-cyan-400/10 hover:border-cyan-400/30 transition-all duration-300">
+                            <div className="w-full aspect-square bg-white/[0.03] border border-white/10 rounded-xl flex items-center justify-center group hover:bg-white/10 hover:border-white/30 transition-all duration-300">
                               <Icon 
-                                className={`w-6 h-6 transition-colors ${assets.iconStyle === "Solid" ? "fill-white/60 text-transparent" : "text-white/60"} group-hover:text-cyan-400 group-hover:fill-cyan-400/20`} 
+                                className={`w-6 h-6 transition-colors ${assets.iconStyle === "Solid" ? "fill-white/60 text-transparent" : "text-white/60"} group-hover:text-white group-hover:fill-white/20 group-hover:drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]`} 
                               />
                             </div>
                             <div className="text-center">
@@ -706,7 +793,7 @@ export default function App() {
                   <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-4">
                     {assets.keywords.map((item, i) => (
                       <div key={i} className="p-6 bg-white/[0.03] border border-white/10 rounded-3xl space-y-2 group hover:bg-white/[0.08] transition-all duration-300">
-                        <h4 className="text-cyan-400 text-sm font-bold uppercase tracking-widest">{item.title}</h4>
+                        <h4 className="text-white/90 text-sm font-bold uppercase tracking-widest drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]">{item.title}</h4>
                         <p className="text-white/40 text-xs leading-relaxed group-hover:text-white/60 transition-colors">{item.desc}</p>
                       </div>
                     ))}
@@ -721,7 +808,7 @@ export default function App() {
                     resetForm();
                     setView("landing");
                   }}
-                  className="px-12 py-4 bg-white/5 border border-white/10 rounded-full text-white text-sm font-bold tracking-widest uppercase transition-all hover:bg-cyan-400/50 hover:scale-105 hover:shadow-[0_0_30px_rgba(34,211,238,0.3)] shadow-xl"
+                  className="px-12 py-4 bg-white/5 border border-white/10 rounded-full text-white text-sm font-bold tracking-widest uppercase transition-all hover:bg-white/10 hover:scale-105 hover:shadow-[0_0_30px_rgba(255,255,255,0.2)] shadow-xl"
                 >
                   {TRANSLATIONS[lang].backToMain}
                 </button>
@@ -745,7 +832,7 @@ export default function App() {
               initial={{ opacity: 0, height: "auto" }}
               animate={{ opacity: 1, height: "auto" }}
               transition={{ duration: 0.5, ease: [0.4, 0, 0.2, 1] }}
-              className="w-full max-w-lg pointer-events-auto bg-[#25282C]/90 backdrop-blur-xl rounded-3xl p-8 md:p-12 border border-white/20 shadow-2xl overflow-hidden"
+              className="w-full max-w-lg pointer-events-auto bg-[#25282C]/90 backdrop-blur-xl rounded-3xl p-8 md:p-12 border border-white/20 shadow-2xl overflow-visible"
             >
               <div className="mb-8 flex items-center justify-between">
                 <button
@@ -753,7 +840,7 @@ export default function App() {
                     if (step > 1) setStep(step - 1);
                     else setView("landing");
                   }}
-                  className="text-white hover:text-cyan-400 text-xs font-mono tracking-widest uppercase transition-colors flex items-center gap-2 font-bold drop-shadow-sm"
+                  className="text-white hover:text-white/80 text-xs font-mono tracking-widest uppercase transition-colors flex items-center gap-2 font-bold drop-shadow-[0_0_8px_rgba(255,255,255,0.4)]"
                 >
                   ← Back
                 </button>
@@ -765,7 +852,7 @@ export default function App() {
                         key={s} 
                         className={`h-1.5 rounded-full transition-all duration-500 ${
                           s <= step 
-                            ? 'w-6 bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]' 
+                            ? 'w-6 bg-white/90 shadow-[0_0_10px_rgba(255,255,255,0.5)]' 
                             : 'w-2 bg-white/20'
                         }`} 
                       />
@@ -795,61 +882,121 @@ export default function App() {
                         <input
                           type="text"
                           name="brandName"
+                          autoComplete="off"
                           value={formData.brandName}
                           onChange={handleInputChange}
                           placeholder="Enter your brand name"
-                          className="w-full bg-black/20 border border-white/40 backdrop-blur-sm rounded-xl px-4 py-4 text-white placeholder:text-white/60 placeholder:font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/20 transition-all"
+                          className={`w-full bg-black/20 backdrop-blur-sm rounded-xl px-4 py-4 text-white placeholder:text-white/60 outline-none ring-0 transition-all hover:border-white/60 border [&:-webkit-autofill]:shadow-[inset_0_0_0_1000px_#1B1D1F] [&:-webkit-autofill]:text-white ${
+                            formData.brandName 
+                              ? "border-white/60 shadow-[0_0_15px_rgba(255,255,255,0.05)]" 
+                              : "border-white/40"
+                          }`}
                         />
                       </div>
                       <div className="space-y-2">
                         <label className="text-[10px] text-white uppercase tracking-widest font-bold drop-shadow-sm">Industry</label>
                         <div className="relative">
-                          <select
-                            name="industry"
-                            value={formData.industry}
-                            onChange={handleInputChange}
-                            className="w-full bg-black/20 border border-white/40 backdrop-blur-sm rounded-xl px-4 py-4 text-white focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/20 transition-all appearance-none cursor-pointer pr-10"
+                          <div 
+                            onClick={() => setOpenDropdown(openDropdown === "industry" ? null : "industry")}
+                            className={`w-full bg-black/20 backdrop-blur-sm rounded-xl px-4 py-4 text-white cursor-pointer flex justify-between items-center transition-all hover:border-white/60 border ${
+                              openDropdown === "industry" ? "border-white/60" : ""
+                            } ${
+                              formData.industry 
+                                ? "border-white/60 shadow-[0_0_15px_rgba(255,255,255,0.05)]" 
+                                : "border-white/40"
+                            }`}
                           >
-                            <option value="" disabled className="bg-zinc-900">Select Industry</option>
-                            <option value="Architecture & Interior" className="bg-zinc-900">Architecture & Interior</option>
-                            <option value="Arts & Entertainment" className="bg-zinc-900">Arts & Entertainment</option>
-                            <option value="Beauty & Wellness" className="bg-zinc-900">Beauty & Wellness</option>
-                            <option value="Creative & Design" className="bg-zinc-900">Creative & Design</option>
-                            <option value="E-commerce" className="bg-zinc-900">E-commerce</option>
-                            <option value="Education" className="bg-zinc-900">Education</option>
-                            <option value="Fashion & Luxury" className="bg-zinc-900">Fashion & Luxury</option>
-                            <option value="Fintech" className="bg-zinc-900">Fintech</option>
-                            <option value="Food & Beverage" className="bg-zinc-900">Food & Beverage</option>
-                            <option value="Healthcare" className="bg-zinc-900">Healthcare</option>
-                            <option value="SaaS & AI" className="bg-zinc-900">SaaS & AI</option>
-                          </select>
-                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none w-4 h-4" />
+                            <span className={formData.industry ? "text-white" : "text-white/60"}>
+                              {formData.industry || "Select Industry"}
+                            </span>
+                            <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${openDropdown === "industry" ? "rotate-180" : ""}`} />
+                          </div>
+                          
+                          <AnimatePresence>
+                            {openDropdown === "industry" && (
+                              <motion.div 
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="absolute top-full left-0 w-full mt-2 bg-[#25282C] border border-white/20 rounded-xl shadow-2xl z-[100] overflow-hidden backdrop-blur-xl"
+                              >
+                                <div className="max-h-60 overflow-y-auto py-2">
+                                  {[
+                                    "Architecture & Interior", "Arts & Entertainment", "Beauty & Wellness", 
+                                    "Creative & Design", "E-commerce", "Education", "Fashion & Luxury", 
+                                    "Fintech", "Food & Beverage", "Healthcare", "SaaS & AI"
+                                  ].map((item) => (
+                                    <div
+                                      key={item}
+                                      onClick={() => {
+                                        setFormData(prev => ({ ...prev, industry: item }));
+                                        setOpenDropdown(null);
+                                      }}
+                                      className="px-4 py-3 text-sm text-white/80 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                                    >
+                                      {item}
+                                    </div>
+                                  ))}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
                       </div>
                       <div className="space-y-2">
                         <label className="text-[10px] text-white uppercase tracking-widest font-bold drop-shadow-sm">Main Touchpoint</label>
                         <div className="relative">
-                          <select
-                            name="touchpoint"
-                            value={formData.touchpoint}
-                            onChange={handleInputChange}
-                            className="w-full bg-black/20 border border-white/40 backdrop-blur-sm rounded-xl px-4 py-4 text-white focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/20 transition-all appearance-none cursor-pointer pr-10"
+                          <div 
+                            onClick={() => setOpenDropdown(openDropdown === "touchpoint" ? null : "touchpoint")}
+                            className={`w-full bg-black/20 backdrop-blur-sm rounded-xl px-4 py-4 text-white cursor-pointer flex justify-between items-center transition-all hover:border-white/60 border ${
+                              openDropdown === "touchpoint" ? "border-white/60" : ""
+                            } ${
+                              formData.touchpoint 
+                                ? "border-white/60 shadow-[0_0_15px_rgba(255,255,255,0.05)]" 
+                                : "border-white/40"
+                            }`}
                           >
-                            <option value="" disabled className="bg-zinc-900">Select Touchpoint</option>
-                            <option value="Mobile App" className="bg-zinc-900">Mobile App</option>
-                            <option value="Website" className="bg-zinc-900">Website</option>
-                            <option value="Physical Product/Packaging" className="bg-zinc-900">Physical Product/Packaging</option>
-                            <option value="Physical Store/Space" className="bg-zinc-900">Physical Store/Space</option>
-                            <option value="Social Media" className="bg-zinc-900">Social Media</option>
-                          </select>
-                          <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none w-4 h-4" />
+                            <span className={formData.touchpoint ? "text-white" : "text-white/60"}>
+                              {formData.touchpoint || "Select Touchpoint"}
+                            </span>
+                            <ChevronDown className={`w-4 h-4 text-white/40 transition-transform ${openDropdown === "touchpoint" ? "rotate-180" : ""}`} />
+                          </div>
+
+                          <AnimatePresence>
+                            {openDropdown === "touchpoint" && (
+                              <motion.div 
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                className="absolute top-full left-0 w-full mt-2 bg-[#25282C] border border-white/20 rounded-xl shadow-2xl z-[100] overflow-hidden backdrop-blur-xl"
+                              >
+                                <div className="py-2">
+                                  {[
+                                    "Mobile App", "Website", "Physical Product/Packaging", 
+                                    "Physical Store/Space", "Social Media"
+                                  ].map((item) => (
+                                    <div
+                                      key={item}
+                                      onClick={() => {
+                                        setFormData(prev => ({ ...prev, touchpoint: item }));
+                                        setOpenDropdown(null);
+                                      }}
+                                      className="px-4 py-3 text-sm text-white/80 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
+                                    >
+                                      {item}
+                                    </div>
+                                  ))}
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
                         </div>
                       </div>
                     </div>
 
                     <button
                       onClick={nextStep}
-                      className="w-full py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-cyan-400 hover:text-black hover:border-cyan-400"
+                      className="w-full py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-white/20 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]"
                     >
                       Next
                     </button>
@@ -863,130 +1010,79 @@ export default function App() {
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
                     transition={{ duration: 0.6, ease: "easeOut" }}
-                    className="space-y-12"
-                  >
+                    className="space-y-8"
+                   >
                     <div className="space-y-2">
                       <h2 className="text-white text-xs font-mono tracking-widest uppercase font-bold drop-shadow-sm">Section 02</h2>
                       <h1 className="text-3xl font-bold text-white tracking-tight drop-shadow-md">Brand Tone</h1>
+                      <p className="text-white/60 text-sm">Select up to 2 keywords in each category.</p>
                     </div>
 
                     <div className="space-y-8">
-                      <div className="space-y-4">
-                        <div className="flex justify-between text-lg text-white uppercase tracking-widest font-extrabold drop-shadow-sm">
-                          <span>Conservative</span>
-                          <span>Innovative</span>
-                        </div>
-                        <div className="relative w-full h-6 flex items-center">
-                          <div className="absolute w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]" 
-                              style={{ width: `${formData.toneConservativeInnovative}%` }}
-                            />
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={formData.toneConservativeInnovative}
-                            onChange={(e) => handleSliderChange("toneConservativeInnovative", parseInt(e.target.value))}
-                            className="absolute w-full appearance-none bg-transparent cursor-pointer z-10
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white 
-                              [&::-webkit-slider-thumb]:shadow-[0_0_15px_#fff] [&::-webkit-slider-thumb]:border-none
-                              [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full 
-                              [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_0_15px_#fff] [&::-moz-range-thumb]:border-none"
-                          />
+                      {/* Vibe Category */}
+                      <div className="space-y-3">
+                        <h3 className="text-[10px] text-white/40 uppercase tracking-[0.2em] font-bold">Vibe</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {["Conservative", "Innovative", "Minimal", "Maximal", "Bold", "Classic"].map((tone) => (
+                            <button
+                              key={tone}
+                              onClick={() => handleToneToggle(tone)}
+                              className={`px-4 py-2 rounded-full border transition-all duration-300 text-xs font-bold ${
+                                formData.selectedTones.includes(tone)
+                                  ? "bg-white text-black border-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+                                  : "bg-transparent text-white border-white/20 hover:border-white/40"
+                              }`}
+                            >
+                              {tone}
+                            </button>
+                          ))}
                         </div>
                       </div>
 
-                      <div className="space-y-4">
-                        <div className="flex justify-between text-lg text-white uppercase tracking-widest font-extrabold drop-shadow-sm">
-                          <span>Minimal</span>
-                          <span>Maximal</span>
-                        </div>
-                        <div className="relative w-full h-6 flex items-center">
-                          <div className="absolute w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]" 
-                              style={{ width: `${formData.toneMinimalMaximal}%` }}
-                            />
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={formData.toneMinimalMaximal}
-                            onChange={(e) => handleSliderChange("toneMinimalMaximal", parseInt(e.target.value))}
-                            className="absolute w-full appearance-none bg-transparent cursor-pointer z-10
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white 
-                              [&::-webkit-slider-thumb]:shadow-[0_0_15px_#fff] [&::-webkit-slider-thumb]:border-none
-                              [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full 
-                              [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_0_15px_#fff] [&::-moz-range-thumb]:border-none"
-                          />
+                      {/* Voice Category */}
+                      <div className="space-y-3">
+                        <h3 className="text-[10px] text-white/40 uppercase tracking-[0.2em] font-bold">Voice</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {["Casual", "Premium", "Cool", "Warm", "Friendly", "Authoritative"].map((tone) => (
+                            <button
+                              key={tone}
+                              onClick={() => handleToneToggle(tone)}
+                              className={`px-4 py-2 rounded-full border transition-all duration-300 text-xs font-bold ${
+                                formData.selectedTones.includes(tone)
+                                  ? "bg-white text-black border-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+                                  : "bg-transparent text-white border-white/20 hover:border-white/40"
+                              }`}
+                            >
+                              {tone}
+                            </button>
+                          ))}
                         </div>
                       </div>
 
-                      <div className="space-y-4">
-                        <div className="flex justify-between text-lg text-white uppercase tracking-widest font-extrabold drop-shadow-sm">
-                          <span>Casual</span>
-                          <span>Premium</span>
-                        </div>
-                        <div className="relative w-full h-6 flex items-center">
-                          <div className="absolute w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]" 
-                              style={{ width: `${formData.toneCasualPremium}%` }}
-                            />
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={formData.toneCasualPremium}
-                            onChange={(e) => handleSliderChange("toneCasualPremium", parseInt(e.target.value))}
-                            className="absolute w-full appearance-none bg-transparent cursor-pointer z-10
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white 
-                              [&::-webkit-slider-thumb]:shadow-[0_0_15px_#fff] [&::-webkit-slider-thumb]:border-none
-                              [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full 
-                              [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_0_15px_#fff] [&::-moz-range-thumb]:border-none"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="space-y-4">
-                        <div className="flex justify-between text-lg text-white uppercase tracking-widest font-extrabold drop-shadow-sm">
-                          <span>Cool</span>
-                          <span>Warm</span>
-                        </div>
-                        <div className="relative w-full h-6 flex items-center">
-                          <div className="absolute w-full h-1.5 bg-white/20 rounded-full overflow-hidden">
-                            <div 
-                              className="h-full bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.5)]" 
-                              style={{ width: `${formData.toneCoolWarm}%` }}
-                            />
-                          </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={formData.toneCoolWarm}
-                            onChange={(e) => handleSliderChange("toneCoolWarm", parseInt(e.target.value))}
-                            className="absolute w-full appearance-none bg-transparent cursor-pointer z-10
-                              [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 
-                              [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white 
-                              [&::-webkit-slider-thumb]:shadow-[0_0_15px_#fff] [&::-webkit-slider-thumb]:border-none
-                              [&::-moz-range-thumb]:w-5 [&::-moz-range-thumb]:h-5 [&::-moz-range-thumb]:rounded-full 
-                              [&::-moz-range-thumb]:bg-white [&::-moz-range-thumb]:shadow-[0_0_15px_#fff] [&::-moz-range-thumb]:border-none"
-                          />
+                      {/* Concept Category */}
+                      <div className="space-y-3">
+                        <h3 className="text-[10px] text-white/40 uppercase tracking-[0.2em] font-bold">Concept</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {["Tech-driven", "Human-centric", "Eco-friendly", "Artistic", "Futuristic"].map((tone) => (
+                            <button
+                              key={tone}
+                              onClick={() => handleToneToggle(tone)}
+                              className={`px-4 py-2 rounded-full border transition-all duration-300 text-xs font-bold ${
+                                formData.selectedTones.includes(tone)
+                                  ? "bg-white text-black border-white shadow-[0_0_15px_rgba(255,255,255,0.5)]"
+                                  : "bg-transparent text-white border-white/20 hover:border-white/40"
+                              }`}
+                            >
+                              {tone}
+                            </button>
+                          ))}
                         </div>
                       </div>
                     </div>
 
                     <button
                       onClick={nextStep}
-                      className="w-full py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-cyan-400 hover:text-black hover:border-cyan-400"
+                      className="w-full py-4 bg-white/10 border border-white/20 backdrop-blur-md rounded-full text-white font-semibold transition-all hover:bg-white/20 hover:shadow-[0_0_20px_rgba(255,255,255,0.3)]"
                     >
                       Next
                     </button>
@@ -1005,6 +1101,7 @@ export default function App() {
                     <div className="space-y-2">
                       <h2 className="text-white text-xs font-mono tracking-widest uppercase font-bold drop-shadow-sm">Section 03</h2>
                       <h1 className="text-3xl font-bold text-white tracking-tight drop-shadow-md">Additional Preferences</h1>
+                      <p className="text-white/60 text-sm">Describe styles, colors, or vibes you want to absolutely avoid.</p>
                     </div>
 
                     <div className="space-y-6">
@@ -1014,16 +1111,16 @@ export default function App() {
                           name="negativePreference"
                           value={formData.negativePreference}
                           onChange={handleInputChange}
-                          placeholder="Styles or colors you want to avoid..."
-                          rows={4}
-                          className="w-full bg-black/20 border border-white/40 backdrop-blur-sm rounded-xl px-4 py-4 text-white placeholder:text-white/60 placeholder:font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400/20 transition-all resize-none"
+                          placeholder="e.g., No neon colors, avoid aggressive typography, don't use dark backgrounds..."
+                          rows={6}
+                          className="w-full bg-black/20 border border-white/40 backdrop-blur-sm rounded-xl px-4 py-4 text-white placeholder:text-white/60 placeholder:font-medium focus:outline-none focus:border-white/60 focus:ring-1 focus:ring-white/20 transition-all resize-none"
                         />
                       </div>
                     </div>
 
                     <button
                       onClick={handleGenerate}
-                      className="w-full py-4 bg-cyan-400/50 text-white border border-white/20 backdrop-blur-md rounded-full font-bold transition-all hover:bg-cyan-400/70 hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(34,211,238,0.3)]"
+                      className="w-full py-4 bg-white/10 text-white border border-white/20 backdrop-blur-md rounded-full font-bold transition-all hover:bg-white/20 hover:scale-[1.02] active:scale-[0.98] shadow-[0_0_30px_rgba(255,255,255,0.2)]"
                     >
                       Generate Brand Identity
                     </button>
